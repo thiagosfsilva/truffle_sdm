@@ -1,0 +1,226 @@
+---
+title: "Environmental niche modelling for predicting truffle growing regions in the British Isles"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Methods
+
+### Study area
+
+This analysis evaluates environmental suitability for growing *Tuber aestivum* syn. *Tuber uncinatum* (Burgundy truffle) in the British Isles. 
+
+All analysis are done using `R 3.6.0`. This document was produced using the package `knitr`, which allows combined writing of free text interspersed with executable `R` scripts ('code chunks'). The first chunk below sets up our environment for all following code chunks.
+
+```{r setops, warning=FALSE, message=FALSE}
+# Load necessary packages 
+library(dplyr) # for data manipulation
+library(sf) # for spatial data formats and operations
+library(sp) # for spatial data formats and operations
+library(mapview) # for quick interactive spatial data viz
+library(raster) # to read and manupulate raster data
+library(dismo) # tools for distribution modelling
+library(ENMeval) # more tools for distribution modelling
+library(sdmpredictors) # for downloading environmental data
+library(spocc) # to obtain species occurrence records
+library(CoordinateCleaner) # cleaning up species records
+library(tmap)
+library(viridis)
+
+# Set knitr options
+
+knitr::opts_chunk$set(message = FALSE, # supress printing of system messages
+               warning = FALSE, # supress printing of system warnings
+               cache = TRUE, # caches chunk results so document generation is faster
+               echo=FALSE) # does not show code
+
+wgs84 <- CRS('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs') # Setting CRS that will be used a lot later
+
+```
+
+We defined as out study area the full extent of he British Islands, including the countries of..... 
+
+Our first step is to obtain high quality vector maps for the boundaries of British Isles, so we can subset our input modeling data to the BI only. We use the pre-formatted R maps made available from https://gadm.org/index.html. 
+
+```{r show_BI_bounds}
+
+bis_sf <- readRDS('./carto_data/british_isles.rds')
+
+# View results
+tm_shape(bis_sf) + tm_fill("darkolivegreen3") 
+```
+
+### Occurrence data
+
+We obtained all available occurrence records from the Global Biodiversity Information Facility (GBIF), and three locations of new reports of sucessful cultivation in the UK, provided by Dr. Paul Thomas. We obtained GBIF data on the focal species using the `spocc` package, which can pull data from several databases.
+
+Occurrence record data are usually 'dirty', meaning there are several georefencing problems that can result in spurious environmental correlations. Luckily, the `CoordinateCleaner` package has built-in functions to reduce these issues. Also, once we do the cleanup, we select only occurrence points from the British Islands, to make sure our environmental niche modeling attempt better approaches UK conditions. 
+
+
+```{r occ_data}
+uk_occ <- readRDS('./occ_data/uk_occ.rds')
+
+tm_shape(bis_sf) + tm_fill(border.col='black', col='white', lwd=1) + tm_shape(uk_occ) + tm_dots(col = 'country', size=2)
+
+```
+
+
+
+
+### Environmental Data 
+
+To obtain the environmental data, we use the `getData()` functiuon of the `raster` R package, which automates the download and subsetting of common geogrtaphic data used in species distribution modeling.  As the download takes some time, we run the code below once, then comment it out after the first run and just read the data from disk. 
+
+As a first approach, we use the Worldclim + Bioclim dataset, since it also offers similar variables to make future predictions.
+
+We exclude BIO8 = Mean Temperature of Wettest Quarter and BIO9 = Mean Temperature of Driest Quarter due to strong artifacts
+
+```{r env_data, warning=FALSE, message=FALSE, echo=TRUE}
+bnames <- c("BIO1 - Annual Mean Temperature",
+"BIO2 - Mean Diurnal Range (Mean of monthly (max temp - min temp))",
+"BIO3 - Isothermality (BIO2/BIO7) (* 100)",
+"BIO4 - Temperature Seasonality (standard deviation *100)",
+"BIO5 - Max Temperature of Warmest Month",
+"BIO6 - Min Temperature of Coldest Month",
+"BIO7 - Temperature Annual Range (BIO5-BIO6)",
+"BIO8 - Mean Temperature of Wettest Quarter",
+"BIO9 - Mean Temperature of Driest Quarter",
+"BIO10 - Mean Temperature of Warmest Quarter",
+"BIO11 - Mean Temperature of Coldest Quarter",
+"BIO12 - Annual Precipitation",
+"BIO13 - Precipitation of Wettest Month",
+"BIO14 - Precipitation of Driest Month",
+"BIO15 - Precipitation Seasonality (Coefficient of Variation)",
+"BIO16 - Precipitation of Wettest Quarter",
+"BIO17 - Precipitation of Driest Quarter",
+"BIO18 - Precipitation of Warmest Quarter",
+"BIO19 - Precipitation of Coldest Quarter")
+
+uk_env <- raster::stack('./env_data/wclim_final.tif', bands = c(1:7,10:19))
+
+names(uk_env) <- bnames[-c(8,9)]
+
+#mapview(uk_env)
+
+# Check if it looks ok
+tm_shape(uk_env[[1]]) + tm_raster()
+
+```
+
+
+### Creating pseudo-absences(background) points
+
+Most SDM methods rely on the use of pseudo-absence or background points to determine suitable habitat. Here, we create a suitable set of random pseudo-absence points. A high amount of points should be used to ensure a good representation of the background. We use the common value of 10000 samples for background. However, a smaller fraction is generated due to the study area extent.
+
+```{r backgroundpts}
+sp_bg <- readRDS("occ_data/background_points.rds")
+        
+```  
+
+### Maxent modeling using the ENMEval package
+
+To model the habitat suitability for truffle growing in the UK and Ireland, wqe will use one of the most efficent and widely used Environmental Niche Modeling (ENM), also known as Species Distribution Modeling (SDM) algorithms, Maxent. To fit and evaluate the models, we will use the `ENMeval`package of the `R` Statistical language.
+
+Since we have a small number of known occurrences, we need to be parsimonious and cautious with the model fitting. We will use a jacknife cross validatrion scheme to assess model reliability, and test different values of regularization (1-3) to avoid overfitting and generate a smoother predition. We also limit the internally engineered features to linear, quadratic and hinge features, following Shcheglovitova and Anderson (2013). 
+
+
+```{r ENMeval_results}
+
+# Get only the points from sp locations
+ukir_model <- readRDS('./results/maxent_results.rds')
+ukir_model@results
+```
+
+We can first inspect the Area Under the Curve (AUC) for the testing dataset. A higher AUC means a model that best explains the data. As a reference, a model that is no better than randomly choosing probabilities has an AUC of 0.5. Values above 0.8  are considered good, and above 0.9, very good.
+
+```{r AUCtest_plot}
+
+eval.plot(ukir_model@results, value = 'avg.test.AUC', legend.position="bottomright" )
+```
+
+We can see that all models performed well overall, with single-feature models (linear, hinge and quadratic) models outperforming most combined feature models, except for LH (linear + hinge) models, which performed second best overall. The next step is to evaluate model overfitting. We ca do that by looking at difference in AUC between the testing data and the trainign data. If the model is overfitting, yopu would expect higher AUCs for training and lower for testing. Similar AUCs indicate model robustness.
+
+```{r AUCdiff_plot}
+
+eval.plot(ukir_model@results, value = 'avg.diff.AUC' )
+```
+
+We can see here the importance of regularization to reduce overfitting. LQH, LH and H models seem to overfit more than others.
+
+Now, we can compare the quality of the model fit using Akaike's Information Criteria. A lower AIC value implies in a model with a better fit (similar to a regression model having a higher R-squared). The algorithm calculates the difference in AIC between all models and the model with the lowest AIC, so we can quicly glance wich ones are best:
+
+```{r AUCtest_plot}
+
+eval.plot(ukir_model@results, value = 'delta.AICc' )
+```
+
+L, Q and LQ seem to be best. Despite the good performance before, H only models have higher dAIC values. We can also rank them by value, when we then see that LQ and Q also appear to be good models.
+
+Considering the above results, we may consider taking a closer look at the predictions from L_3, Q_3, LH_3 and LQ_3. 
+
+
+
+```{r ENMeval_map}
+best_preds <- subset(ukir_model@predictions, c('L_3','LH_3','LQ_3','Q_3'))
+ 
+crs(best_preds) <- wgs84
+ 
+mapview(best_preds, col.regions = viridisLite::viridis, alpha.regions=1, maxpixels =  1997888)
+
+tm_l3 <- tm_shape(bis_sf) + tm_borders() + tm_shape(best_preds[[1]]) + tm_raster(title=names(best_preds[[1]]))
+tm_lh25 <- tm_shape(bis_sf) + tm_borders() + tm_shape(best_preds[[2]]) + tm_raster(title=names(best_preds[[2]]))
+tm_lq25 <- tm_shape(bis_sf) + tm_borders() + tm_shape(best_preds[[3]]) + tm_raster(title=names(best_preds[[3]]))
+tm_q3 <- tm_shape(bis_sf) + tm_borders() + tm_shape(best_preds[[4]]) + tm_raster(title=names(best_preds[[4]]))
+
+tmap_arrange(tm_l3,tm_lh25,tm_lq25,tm_q3)
+
+ 
+# bestmod <- ukir_model@results[which(ukir_model@results$delta.AICc==0),]
+# 
+# varimp <- var.importance(bestmod)
+# 
+# barplot(varimp$percent.contribution, names.arg=varimp$variable, las=2, ylab="Percent Contribution")
+# 
+# # Export predictions
+# 
+# exp_fun <- function(x){
+#     fname = paste0('./results/', names(x), '.tif')
+#     writeRaster(x,filename=fname,datatype='FLT4S' , format='GTiff', overwrite=TRUE)
+# }
+# 
+# lapply(unstack(best_preds),exp_fun)
+
+
+```
+
+```{r}
+ ## Thresholding
+ 
+paul_points <- read.csv("./occ_data/new_sites.csv")
+
+head(paul_points)
+
+sp_pp <- SpatialPointsDataFrame(as.matrix(paul_points[,c(8,9)]), paul_points, proj4string = wgs84)
+
+mapview(sp_pp)
+
+cutoffs <- apply(extract(best_preds,sp_pp, df=TRUE),2,min)
+
+bin_L3 <- best_preds[[1]] >= cutoffs[2]
+bin_LH3 <- best_preds[[2]] >= cutoffs[3]
+bin_LQ3 <- best_preds[[3]] >= cutoffs[4]
+bin_Q3 <- best_preds[[4]] >= cutoffs[5]
+
+bin_all <- stack(bin_L3,bin_LH3,bin_LQ3,bin_Q3)
+
+mapview(bin_all) + mapview(sp_pp) + mapview(uk_occ)
+
+```
+ 
+ 
+ 
+
+
+
+

@@ -1,0 +1,342 @@
+---
+title: "SDM Analysis for Truffle Planting"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Intro and Objectives
+
+This analysis evaluates environmental suitability for growing *Tuber aestivum* syn. *Tuber uncinatum* (Burgundy truffle) in the British Isles. 
+
+All analysis are done using `R 3.6.0`. This document was produced using the package `knitr`, which allows combined writing of free text interspersed with executable `R` scripts ('code chunks'). The first chunk below sets up our environment for all following code chunks.
+
+```{r setops, warning=FALSE, message=FALSE}
+# Load necessary packages 
+library(dplyr) # for data manipulation
+library(sf) # for spatial data formats and operations
+library(sp) # for spatial data formats and operations
+library(mapview) # for quick interactive spatial data viz
+library(raster) # to read and manupulate raster data
+library(dismo) # tools for distribution modelling
+library(ENMeval) # more tools for distribution modelling
+library(sdmpredictors) # for downloading environmental data
+library(spocc) # to obtain species occurrence records
+library(CoordinateCleaner) # cleaning up species records
+library(tmap)
+
+# Set knitr options
+
+knitr::opts_chunk$set(message = FALSE, # supress printing of system messages
+               warning = FALSE, # supress printing of system warnings
+               cache = TRUE) # caches chunk results so document generation is faster
+
+wgs84 <- CRS('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+
+```
+
+## Data and Methods
+
+### Boundaries of the British Isles
+
+Our first step is to obtain high quality vector maps for the boundaries of British Isles, so we can subset our input modeling data to the BI only. We use the pre-formatted R maps made available from https://gadm.org/index.html. 
+
+```{r get_BI_bounds}
+# Download UK as 'sf' R object. 
+# UK is a domain, so level 1 will give us individual countries
+# download.file('https://biogeo.ucdavis.edu/data/gadm3.6/Rsf/gadm36_GBR_1_sf.rds','./carto_data/gadm36_GBR_1_sf.rds')
+# 
+# # Download Republic of Ireland as 'sf'  RT object.
+# # Since Ireland is a single country, we want level 0
+# download.file('https://biogeo.ucdavis.edu/data/gadm3.6/Rsf/gadm36_IRL_0_sf.rds','./carto_data/gadm36_IRL_0_sf.rds')
+# 
+# # And the Isle of Man, which is a crown territory but not in ther UK...geez!
+# download.file('https://biogeo.ucdavis.edu/data/gadm3.6/Rsf/gadm36_IMN_0_sf.rds', './carto_data/gadm36_IMN_0_sf.rds') 
+# 
+# # Read in files
+# uk_sf <- readRDS("./carto_data/gadm36_GBR_1_sf.rds") %>%
+#     dplyr::select(NAME_1) %>% rename(country = NAME_1)
+# 
+# ir_sf <- readRDS("./carto_data/gadm36_IRL_0_sf.rds") %>%
+#     dplyr::select(NAME_0) %>% rename(country = NAME_0)
+#                  
+# im_sf <- readRDS("./carto_data/gadm36_IMN_0_sf.rds") %>%
+#     dplyr::select(NAME_0) %>% rename(country = NAME_0)
+# 
+# # Join the two countries
+# bis_sf <- rbind(uk_sf,ir_sf,im_sf)
+# 
+# # Save it for future use
+# saveRDS(bis_sf,'./carto_data/british_isles.rds')
+
+bis_sf <- readRDS('./carto_data/british_isles.rds')
+
+# View results
+tm_shape(bis_sf) + tm_polygons(bis_sf)
+```
+
+### Occurrence data
+
+Our dataset of species occurrences consists of three data sets: occurrence records obtained from the Global Biodiversity Information Facility (GBIF), curated growing sites recorded from ? and three locations of new reports of sucessful cultivation in the UK, provided by Dr. Paul Thomas. 
+
+We obtained GBIF data on the focal species using the `spocc` package, which can pull data from several databases.
+
+```{r get_gbif}
+# sp_names <- c('Tuber aestivum','Tuber uncinatum')
+# 
+# # Query records from GBIF
+# gbif_query <- occ(query = sp_names,
+#                 from =  'gbif',
+#                 has_coords = TRUE,
+#                 limit = 1e6) 
+# 
+# gbif_occ <- gbif_query %>% occ2df() %>% # get occurrences as a data.frame (table)
+#             mutate(longitude = as.numeric(longitude), # convert coords to numeric
+#                    latitude = as.numeric(latitude), # convert coords to numeric
+#                    year = lubridate::year(date)) %>% # get year of record from date
+#             dplyr::select(name, longitude, latitude, year) # select only useful columns
+# 
+# summary(gbif_occ)
+# 
+# print(gbif_occ)
+
+
+```
+
+
+Occurrence record data are usually 'dirty', meaning there are several georefencing problems that can result in spurious environmental correlations. Luckily, the `CoordinateCleaner` package has built-in functions to reduce these issues. Also, once we do the cleanup, we select only occurrence points from the British Islands, to make sure our environmental niche modeling attempt better approaches UK conditions. 
+
+
+```{r coord_cleanup}
+
+# flag bad data
+# flags_spatial <- clean_coordinates(x = gbif_occ,
+#                                    species = "name",
+#                                    lon = "longitude",
+#                                    lat = "latitude",
+#                                    tests = c("capitals", # radius around capitals
+#                                              "centroids", # radius around country and province centroids
+#                                              "duplicates", # records from one species with identical coordinates
+#                                              "equal", # equal coordinates
+#                                              "gbif", # radius around GBIF headquarters
+#                                              "institutions", # radius around biodiversity institutions
+#                                              "seas", # in the sea
+#                                              "urban", # within urban area
+#                                              "validity", # outside reference coordinate system
+#                                              "zeros" # plain zeros and lat = lon
+#                                              )
+#                                    )
+# 
+# 
+# # exclude records flagged by any test, exclude old records and convert to spatial object
+# clean_occ <- gbif_occ %>% 
+#     dplyr::filter(flags_spatial$.summary) %>% 
+#     dplyr::filter(year >= 1970) %>%
+#     st_as_sf(coords=c('longitude','latitude'), crs=wgs84)
+# 
+# uk_occ <- clean_occ %>% st_intersection(bis_sf)
+# 
+# # How many observations?
+# nrow(clean_occ)
+# nrow(uk_occ)
+# 
+# saveRDS(uk_occ,'./occ_data/uk_occ.rds')
+
+uk_occ <- readRDS('./occ_data/uk_occ.rds')
+
+mapview(uk_occ,zcol='country')
+
+```
+
+
+
+
+### Environmental Data 
+
+To obtain the environmental data, we use the `getData()` functiuon of the `raster` R package, which automates the download and subsetting of common geogrtaphic data used in species distribution modeling.  As the download takes some time, we run the code below once, then comment it out after the first run and just read the data from disk. 
+
+```{r list_env_data}
+# Download command
+# getData(name='worldclim',
+#         var='bio',
+#         res=0.5,
+#         path='./env_data/',
+#         lat = 53.815697,
+#         lon = -2.056282)
+
+```
+
+As a first approach, we use the Worldclim + Bioclim dataset, since it also offers similar variables to make future predictions.
+
+```{r get_env_data, warning=FALSE, message=FALSE, echo=TRUE}
+# Read in cartographic data
+# gbr <- readRDS('./carto_data/gadm36_GBR_1_sp.rds') # read UK country borders as sp object
+# irl <- readRDS('./carto_data/gadm36_IRL_0_sp.rds') # read Ireland borders as sp object
+# ukir <- union(gbr, irl) # combine all polygions on a single sp object
+# 
+# mapview(ukir) # Does it look correct?
+
+# saveRDS(ukir,'./carto_data/ukir.rds') # Save to disk for future use
+
+ukirbox <- as_Spatial(st_as_sfc(st_bbox(bis_sf)))# Get boundary bounding box to cut the rasters
+
+# Select and download only ENVIREM layers
+# envirem_layers <- layercodes %>% filter(dataset_code == 'ENVIREM') 
+# print(envirem_layers[,1:3])
+
+# Download the actual raster data
+# envirem <- load_layers(envirem_layers$layer_code,
+#                       equalarea = FALSE,
+#                       rasterstack = TRUE,
+#                       datadir = './env_data/')
+
+biocli <- raster::stack('./env_data/wc0.5/bioclim_gbr_isles.tif') #read pre-downloaded raster files
+
+# Mask out non- UK-IR data
+uk_env <- mask(biocli,as_Spatial(bis_sf))
+
+crs(uk_env) <- wgs84
+
+# Check if it looks ok
+mapview(uk_env[[1]])
+
+```
+
+
+### Creating pseudo-absences(background) points
+
+Most SDM methods rely on the use of pseudo-absence or background points to determine suitable habitat. Here, we create a suitable set of random pseudo-absence points. A high amount of points should be used to ensure a good representation of the background. We use the common value of 10000 samples for background. However, a smaller fraction is generated due to the study area extent.
+
+```{r backgroundpts}
+maskras <- uk_env[[1]] # use the first UK layer as a bounding box
+
+set.seed(1979)
+bg <- randomPoints(mask = maskras,
+                   n = 10000,
+                   ext = ukirbox,
+                   lonlatCorrection = TRUE) # Accouts for different cell sizes when sampling in lat/long
+
+sp_bg <- SpatialPoints(bg,proj4string = crs(ukirbox))
+
+mapview(sp_bg)
+
+```
+
+
+
+### Maxent modeling using the ENMEval package
+
+To model the habitat suitability for truffle growing in the UK and Ireland, wqe will use one of the most efficent and widely used Environmental Niche Modeling (ENM), also known as Species Distribution Modeling (SDM) algorithms, Maxent. To fit and evaluate the models, we will use the `ENMeval`package of the `R` Statistical language.
+
+Since we have a very small number of known occurrences, we need to be parsimonious and cautious with the model fitting. We will use a jacknife cross validatrion scheme to assess model reliability, and test different values of regularization (1-3) to avoid overfitting and generate a smoother predition. We also limit the internally engineered features to linear, quadratic features and hinge features, following Shcheglovitova and Anderson (2013). However, the small N prevents computation from all assessment statistics, and thus selection of the most apropriate model was done through interpretation of results.
+
+
+```{r ENMeval_run}
+
+# Get only the points from sp locations
+occ = st_coordinates(uk_occ)
+
+ukir_model <- ENMevaluate(occ,uk_env, bg,
+                          method='jackknife',
+                          RMvalues = seq(from = 1, to = 3, by = 0.5),
+                          fc = c("L", "Q", "H", "LQ", "LH", "QH", "LQH"),
+                          algorithm = 'maxent.jar',
+                          parallel=TRUE,
+                          numCores=2)
+
+saveRDS(ukir_model, './results/maxent_results.rds')
+```
+
+Let's look at the model results. The overall results table is:
+
+```{r ukir_table}
+ukir_model <- readRDS('./results/maxent_results.rds')
+
+ukir_model@results
+```
+
+We can first inspect the Area Under the Curve (AUC) for the testing dataset. A higher AUC means a model that best explains the data. As a reference, a model that is no better than randomly choosing probabilities has an AUC of 0.5. Values above 0.8  are considered good, and above 0.9, very good.
+
+```{r AUCtest_plot}
+
+eval.plot(ukir_model@results, value = 'avg.test.AUC', legend.position="bottomright" )
+```
+
+We can see that all models performed well overall, with single-feature models (linear, hinge and quadratic) models outperforming most combined feature models, except for LH (linear + hinge) models, which performed second best overall. The next step is to evaluate model overfitting. We ca do that by looking at difference in AUC between the testing data and the trainign data. If the model is overfitting, yopu would expect higher AUCs for training and lower for testing. Similar AUCs indicate model robustness.
+
+```{r AUCdiff_plot}
+
+eval.plot(ukir_model@results, value = 'avg.diff.AUC' )
+```
+
+We can see here the importance of regularization to reduce overfitting. LQH, LH and H models seem to overfit more than others.
+
+Now, we can compare the quality of the model fit using Akaike's Information Criteria. A lower AIC value implies in a model with a better fit (similar to a regression model having a higher R-squared). The algorithm calculates the difference in AIC between all models and the model with the lowest AIC, so we can quicly glance wich ones are best:
+
+```{r AUCtest_plot}
+
+eval.plot(ukir_model@results, value = 'delta.AICc' )
+```
+
+L, Q and LQ seem to be best. Despite the good performance before, H only models have higher dAIC values. We can also rank them by value, when we then see that LQ and Q also appear to be good models.
+
+```{r AIC_rank}
+
+ukir_model@results %>% arrange(delta.AICc) %>% dplyr::select(c(settings,delta.AICc))
+
+```
+
+Considering the above results, we may consider taking a look at the predictions from L_3, Q_3, LH_3 and LQ_3 
+
+
+
+```{r ENMeval_map}
+best_preds <- subset(ukir_model@predictions, c('L_3','LH_3','LQ_3','Q_3'))
+
+crs(best_preds) <- wgs84
+
+mapview(best_preds, col.regions = viridisLite::viridis, alpha.regions=1, maxpixels =  1997888)
+
+bestmod <- ukir_model@results[which(ukir_model@results$delta.AICc==0),]
+
+varimp <- var.importance(bestmod)
+
+barplot(varimp$percent.contribution, names.arg=varimp$variable, las=2, ylab="Percent Contribution")
+
+# Export predictions
+
+exp_fun <- function(x){
+    fname = paste0('./results/', names(x), '.tif')
+    writeRaster(x,filename=fname,datatype='FLT4S' , format='GTiff', overwrite=TRUE)
+}
+
+lapply(unstack(best_preds),exp_fun)
+
+
+```
+
+ 
+```{r profile_methods}
+
+bc <- bioclim(uk_env, sp_loc)
+bc_pred <- predict(bc, uk_env)
+mapview(bc_pred)
+
+
+dm <- domain(uk_env, sp_loc)
+dm_pred <- predict(dm, uk_env)
+mapview(dm_pred)
+
+mh <- mahal(uk_env, sp_loc)
+mh_pred <- predict(mh, uk_env)
+mapview(mh_pred)
+
+library(biomod2)
+library(ecospat)
+
+biomod_data <- BIOMOD_FormatingData(resp.var = uk_occ, expl.var = uk_env, resp.name = ' Truffle')
+
+
+```
+
+

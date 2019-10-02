@@ -1,0 +1,20 @@
+Rerun with all EUU points
+
+Model assessment plots
+
+Whole area suitability
+
+Do a figure with two areas: the one constrained by GBIF and one contrstained by new sites
+
+Histograms of suitability for GBIF and new 
+
+Variable importance cannot currently be calculated with Maxnet models (only Maxent)
+
+Projection for CMIP5
+
+4.5
+8.5 
+for
+2090
+2070 after
+
