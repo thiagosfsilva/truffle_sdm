@@ -4,7 +4,6 @@
 
 library(raster) # For reading and manipulating rasters
 library(sf) # For managing vector data
-library(tmap) # For map visualization
 library(rstudioapi) # For interaction with the WSL terminal
 
 ### Download CHELSA data 
@@ -15,11 +14,11 @@ tlist <- terminalList() # Get the terminal ID
 terminalSend(tlist[1],'cd env_data/CHELSA/present\n') # Change directory on terminal
 # Send download command to terminal
 terminalSend(tlist[1],
-             'wget -r --no-parent -e robots=off --accept *.tif https://www.wsl.ch/lud/chelsa/data/bioclim/integer/\n')
+             'wget -r --no-parent -e -nd robots=off --accept *.tif https://www.wsl.ch/lud/chelsa/data/bioclim/integer/\n')
 
 terminalSend(tlist[1],'cd env_data/CHELSA/future/\n')
 terminalSend(tlist[1],
-             'wget -r --no-parent -e robots=off --accept *.tif https://www.wsl.ch/lud/chelsa/data/cmip5/2061-2080/bio/\n')
+             'wget -r --no-parent -e -nd robots=off --accept *.tif https://www.wsl.ch/lud/chelsa/data/cmip5/2061-2080/bio/\n')
 
 ### Loading and cutting rasters
 
@@ -28,7 +27,7 @@ terminalSend(tlist[1],
 
 # Get raster file with mask for Europe
 eu_mask <- raster('carto_data/EUmask.tif')
-plot(eu_mask)
+# plot(eu_mask)
 
 # Then, we read the global CHELSA files from disk as a stack:
 ch_files <- list.files('env_data/CHELSA/present/',
@@ -37,7 +36,8 @@ ch_files <- list.files('env_data/CHELSA/present/',
 
 ch_glo <- stack(ch_files)
 
-uk_env <- mask(ch_glo,as_Spatial(bis_sf))
-
-writeRDS(uk_env,file = 'env_data/CHELSA/chelsa_present.rds')
-unlink('./env_data/CHELSA/www.wsl.ch/', recursive = TRUE)
+#uk_env <- mask(ch_glo,as_Spatial(bis_sf))
+ch_cut <- crop(ch_glo,eu_mask)
+eu_env <- mask(ch_cut,eu_mask)
+    
+saveRDS(eu_env,file = 'env_data/CHELSA/EU_chelsa_bioclim_present.rds')
